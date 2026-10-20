@@ -7,10 +7,9 @@ require_once '../db.php';
 ========================================= */
 
 if (
-    !isset($_SESSION['user_id']) ||
+    !isset($_SESSION['customer_id']) ||
     !isset($_SESSION['role']) ||
-    $_SESSION['role'] !== 'customer' ||
-    empty($_SESSION['customer_id'])
+    $_SESSION['role'] !== 'customer'
 ) {
     header("Location: ../login.php");
     exit;
@@ -237,47 +236,58 @@ if ($upcoming_stmt) {
             margin: 0;
         }
 
-        .top-nav {
-            background: #007bff;
-            padding: 14px 20px;
-            border-bottom: 3px solid #0056b3;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
+     
 
-        .brand {
-            color: white;
-            font-size: 20px;
-            font-weight: bold;
-            text-decoration: none;
-        }
+.top-nav {
+    background: #8B6B4A;
+    padding: 16px 5%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
 
-        .brand:hover {
-            color: white;
-            text-decoration: none;
-        }
+.brand {
+    color: white;
+    font-size: 21px;
+    font-weight: bold;
+    text-decoration: none;
+}
 
-        .nav-links {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-        }
+.brand:hover {
+    color: white;
+    text-decoration: none;
+}
 
-        .nav-links a {
-            color: white;
-            text-decoration: none;
-            padding: 9px 12px;
-            border-radius: 4px;
-            font-size: 14px;
-        }
+.nav-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
 
-        .nav-links a:hover,
-        .nav-links a.active {
-            background: #0056b3;
-        }
+.nav-links a {
+    color: white;
+    text-decoration: none;
+    padding: 9px 12px;
+    border-radius: 5px;
+}
+
+.nav-links a:hover,
+.nav-links a.active {
+    background: #654321;
+    color: white;
+}
+
+/* MOBILE RESPONSIVENESS */
+
+@media (max-width: 700px) {
+    .top-nav {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}
+
 
         .container-page {
             width: 95%;
@@ -429,19 +439,9 @@ if ($upcoming_stmt) {
             color: #6c757d;
         }
 
-        @media (max-width: 768px) {
-            .container-page {
-                width: 98%;
-            }
+        
 
-            .top-nav {
-                padding: 12px;
-            }
-
-            .nav-links a {
-                padding: 8px;
-            }
-        }
+     
     </style>
 </head>
 
@@ -458,7 +458,7 @@ if ($upcoming_stmt) {
     </a>
 
     <div class="nav-links">
-        <a href="customer_dashboard.php" class="active">Dashboard</a>
+        <a href="dashboard.php" class="active">Dashboard</a>
         <a href="my_orders.php">My Orders</a>
         <a href="my_appointments.php">Appointments</a>
         <a href="my_payments.php">Payments</a>

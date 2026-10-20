@@ -427,7 +427,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 
 <nav class="top-nav">
-    <a href="staff_dashboard.php">Dashboard</a>
+    <a href="dashboard.php">Dashboard</a>
     <a href="my_orders.php">My Orders</a>
     <a href="upload_design.php" class="active">Upload Designs</a>
     <a href="../logout.php">Logout</a>

@@ -1,442 +1,456 @@
 <?php
+session_start();
 
 require_once "db.php";
 
+error_reporting(E_ALL);
+ini_set("display_errors", 1);
+
 $message = "";
-$messageType = "info";
+$messageType = "danger";
+$reset = null;
 
-$token = $_GET["token"] ?? "";
-$validToken = false;
+// Get the token from the URL or submitted form.
+$token = $_GET["token"] ?? $_POST["token"] ?? "";
 
+if (!is_string($token)) {
+    $token = "";
+}
 
-// STEP 1: Validate the token from the email
-
-if (
-    is_string($token) &&
-    preg_match('/^[a-f0-9]{64}$/', $token)
-) {
+// Function to check whether the reset token is valid.
+function findValidReset($conn, $token)
+{
+    // A SHA-256 reset token should contain 64 hexadecimal characters.
+    if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+        return null;
+    }
 
     $tokenHash = hash("sha256", $token);
 
-    $stmt = $conn->prepare(
-        "SELECT
-            password_resets.reset_id,
-            password_resets.user_id
+    $sql = "
+        SELECT reset_id, user_id, account_type
+        FROM password_resets
+        WHERE token_hash = ?
+          AND expires_at > NOW()
+          AND used_at IS NULL
+        LIMIT 1
+    ";
 
-         FROM password_resets
+    $stmt = $conn->prepare($sql);
 
-         INNER JOIN users
-         ON password_resets.user_id = users.user_id
-
-         WHERE password_resets.token_hash = ?
-
-         AND password_resets.expires_at > NOW()
-
-         AND password_resets.used_at IS NULL
-
-         AND users.role = 'admin'
-
-         AND users.account_status = 'approved'
-
-         LIMIT 1"
-    );
+    if (!$stmt) {
+        error_log("Reset query error: " . $conn->error);
+        return null;
+    }
 
     $stmt->bind_param("s", $tokenHash);
-
     $stmt->execute();
 
     $result = $stmt->get_result();
-
     $reset = $result->fetch_assoc();
 
     $stmt->close();
 
-    if ($reset) {
-        $validToken = true;
+    if (!$reset) {
+        return null;
     }
+
+    // Verify admin, staff, or designer accounts.
+    if ($reset["account_type"] === "users") {
+
+        $stmt = $conn->prepare("
+            SELECT user_id
+            FROM users
+            WHERE user_id = ?
+              AND (
+                    (role = 'admin'
+                     AND account_status = 'approved')
+                    OR
+                    (role IN ('staff', 'designer')
+                     AND account_status = 'active')
+                  )
+            LIMIT 1
+        ");
+
+        if (!$stmt) {
+            error_log("User verification error: " . $conn->error);
+            return null;
+        }
+
+        $stmt->bind_param("i", $reset["user_id"]);
+        $stmt->execute();
+
+        $result = $stmt->get_result();
+        $accountExists = $result->num_rows > 0;
+
+        $stmt->close();
+
+        return $accountExists ? $reset : null;
+    }
+
+    // Verify customer accounts.
+    if ($reset["account_type"] === "customers") {
+
+        $stmt = $conn->prepare("
+            SELECT customer_id
+            FROM customers
+            WHERE customer_id = ?
+              AND account_status = 'active'
+            LIMIT 1
+        ");
+
+        if (!$stmt) {
+            error_log("Customer verification error: " . $conn->error);
+            return null;
+        }
+
+        $stmt->bind_param("i", $reset["user_id"]);
+        $stmt->execute();
+
+        $result = $stmt->get_result();
+        $accountExists = $result->num_rows > 0;
+
+        $stmt->close();
+
+        return $accountExists ? $reset : null;
+    }
+
+    return null;
 }
 
 
-// STEP 2: Process the new password form
-
+// Process the password reset form.
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    $token = $_POST["token"] ?? "";
+    $password = $_POST["new_password"] ?? "";
+    $confirmPassword = $_POST["confirm_password"] ?? "";
 
-    $password = $_POST["password"] ?? "";
+    // Check the token again when the form is submitted.
+    $reset = findValidReset($conn, $token);
 
-    $confirmPassword =
-        $_POST["confirm_password"] ?? "";
+    if (!$reset) {
 
-    if (
-        !is_string($token) ||
-        !preg_match('/^[a-f0-9]{64}$/', $token)
-    ) {
-
-        $message =
-            "Invalid reset link. Request a new one.";
-
+        $message = "This reset link is invalid, expired, or already used.";
         $messageType = "danger";
 
-    } elseif (
-        !is_string($password) ||
-        strlen($password) < 12
-    ) {
+    } elseif (strlen($password) < 12) {
 
-        $message =
-            "Your password must contain at least 12 characters.";
+        $message = "Your password must contain at least 12 characters.";
+        $messageType = "warning";
 
-        $messageType = "danger";
+    } elseif ($password !== $confirmPassword) {
 
-    } elseif (
-        !is_string($confirmPassword) ||
-        $password !== $confirmPassword
-    ) {
-
-        $message =
-            "The passwords do not match.";
-
-        $messageType = "danger";
+        $message = "The passwords do not match.";
+        $messageType = "warning";
 
     } else {
 
-        $tokenHash = hash("sha256", $token);
-
-        // Verify the token again before updating the password
-        $stmt = $conn->prepare(
-            "SELECT
-                password_resets.reset_id,
-                password_resets.user_id
-
-             FROM password_resets
-
-             INNER JOIN users
-             ON password_resets.user_id = users.user_id
-
-             WHERE password_resets.token_hash = ?
-
-             AND password_resets.expires_at > NOW()
-
-             AND password_resets.used_at IS NULL
-
-             AND users.role = 'admin'
-
-             AND users.account_status = 'approved'
-
-             LIMIT 1"
+        $passwordHash = password_hash(
+            $password,
+            PASSWORD_DEFAULT
         );
 
-        $stmt->bind_param("s", $tokenHash);
+        try {
 
-        $stmt->execute();
+            $conn->begin_transaction();
 
-        $result = $stmt->get_result();
+            // Update the correct account.
+            if ($reset["account_type"] === "users") {
 
-        $reset = $result->fetch_assoc();
+                $stmt = $conn->prepare("
+                    UPDATE users
+                    SET password_hash = ?
+                    WHERE user_id = ?
+                ");
 
-        $stmt->close();
+            } else {
 
-        if (!$reset) {
+                $stmt = $conn->prepare("
+                    UPDATE customers
+                    SET password_hash = ?
+                    WHERE customer_id = ?
+                ");
+            }
 
-            $message =
-                "This reset link is invalid, expired, "
-                . "or has already been used.";
+            if (!$stmt) {
+                throw new Exception("Could not prepare password update.");
+            }
 
-            $messageType = "danger";
-
-            $validToken = false;
-
-        } else {
-
-            // Securely hash the new password
-            $passwordHash = password_hash(
-                $password,
-                PASSWORD_DEFAULT
+            $stmt->bind_param(
+                "si",
+                $passwordHash,
+                $reset["user_id"]
             );
 
-            try {
-
-                $conn->begin_transaction();
-
-                // Update the administrator's password
-                $stmt = $conn->prepare(
-                    "UPDATE users
-                     SET password_hash = ?
-                     WHERE user_id = ?
-                     AND role = 'admin'
-                     AND account_status = 'approved'"
-                );
-
-                $stmt->bind_param(
-                    "si",
-                    $passwordHash,
-                    $reset["user_id"]
-                );
-
-                if (!$stmt->execute()) {
-
-                    throw new Exception(
-                        "Password update failed."
-                    );
-                }
-
-                $stmt->close();
-
-                // Mark the token as used
-                $stmt = $conn->prepare(
-                    "UPDATE password_resets
-                     SET used_at = NOW()
-                     WHERE reset_id = ?
-                     AND used_at IS NULL"
-                );
-
-                $stmt->bind_param(
-                    "i",
-                    $reset["reset_id"]
-                );
-
-                if (
-                    !$stmt->execute() ||
-                    $stmt->affected_rows !== 1
-                ) {
-
-                    throw new Exception(
-                        "The reset token could not be completed."
-                    );
-                }
-
-                $stmt->close();
-
-                // Remove remaining reset requests for this admin
-                $stmt = $conn->prepare(
-                    "DELETE FROM password_resets
-                     WHERE user_id = ?"
-                );
-
-                $stmt->bind_param(
-                    "i",
-                    $reset["user_id"]
-                );
-
-                $stmt->execute();
-
-                $stmt->close();
-
-                $conn->commit();
-
-                // Redirect to login after success
-                header("Location: login.php?reset=success");
-
-                exit;
-
-            } catch (Throwable $e) {
-
-                $conn->rollback();
-
-                error_log(
-                    "Password reset failed: "
-                    . $e->getMessage()
-                );
-
-                $message =
-                    "The password could not be changed. "
-                    . "Please request a new reset link if needed.";
-
-                $messageType = "danger";
+            if (!$stmt->execute()) {
+                throw new Exception("Could not update the password.");
             }
+
+            $stmt->close();
+
+            // Mark this reset token as used.
+            $stmt = $conn->prepare("
+                UPDATE password_resets
+                SET used_at = NOW()
+                WHERE reset_id = ?
+                  AND used_at IS NULL
+            ");
+
+            if (!$stmt) {
+                throw new Exception("Could not prepare token update.");
+            }
+
+            $stmt->bind_param("i", $reset["reset_id"]);
+
+            if (!$stmt->execute() || $stmt->affected_rows !== 1) {
+                throw new Exception("Could not mark the reset token as used.");
+            }
+
+            $stmt->close();
+
+            // Remove other reset requests for the same account.
+            $stmt = $conn->prepare("
+                DELETE FROM password_resets
+                WHERE user_id = ?
+                  AND account_type = ?
+                  AND reset_id != ?
+            ");
+
+            if (!$stmt) {
+                throw new Exception("Could not prepare token cleanup.");
+            }
+
+            $stmt->bind_param(
+                "isi",
+                $reset["user_id"],
+                $reset["account_type"],
+                $reset["reset_id"]
+            );
+
+            if (!$stmt->execute()) {
+                throw new Exception("Could not clean up old reset requests.");
+            }
+
+            $stmt->close();
+
+            $conn->commit();
+
+            // Redirect after a successful password reset.
+            header("Location: login.php?reset=success");
+            exit;
+
+        } catch (Throwable $e) {
+
+            $conn->rollback();
+
+            error_log("Password reset error: " . $e->getMessage());
+
+            $message = "Something went wrong while resetting your password. Please try again.";
+            $messageType = "danger";
         }
     }
 
+} else {
 
-    // Recheck the token to decide whether to display the form
-    if (
-        is_string($token) &&
-        preg_match('/^[a-f0-9]{64}$/', $token)
-    ) {
+    // Validate the token when the page first opens.
+    $reset = findValidReset($conn, $token);
 
-        $tokenHash = hash("sha256", $token);
-
-        $stmt = $conn->prepare(
-            "SELECT password_resets.reset_id
-
-             FROM password_resets
-
-             INNER JOIN users
-             ON password_resets.user_id = users.user_id
-
-             WHERE password_resets.token_hash = ?
-
-             AND password_resets.expires_at > NOW()
-
-             AND password_resets.used_at IS NULL
-
-             AND users.role = 'admin'
-
-             AND users.account_status = 'approved'
-
-             LIMIT 1"
-        );
-
-        $stmt->bind_param("s", $tokenHash);
-
-        $stmt->execute();
-
-        $result = $stmt->get_result();
-
-        $validToken = ($result->num_rows > 0);
-
-        $stmt->close();
+    if (!$reset) {
+        $message = "This reset link is invalid, expired, or already used. Please request a new reset link.";
+        $messageType = "danger";
     }
 }
-
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1.0">
+    <title>Reset Password | Clare Designs</title>
 
-    <title>Reset Password - Clare Designs</title>
+    <style>
+       ```css
+* {
+    box-sizing: border-box;
+}
 
-    <link rel="stylesheet"
-          href="assets/css/adminlte.min.css">
+body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+    background: #eaf2ff;
+}
 
+.reset-container {
+    width: 100%;
+    max-width: 430px;
+    padding: 30px;
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 8px 25px rgba(13, 71, 161, 0.15);
+    border-top: 5px solid #0d6efd;
+}
+
+h2 {
+    text-align: center;
+    color: #0d6efd;
+    margin-top: 0;
+}
+
+p {
+    text-align: center;
+    color: #555555;
+    line-height: 1.5;
+}
+
+label {
+    display: block;
+    margin-top: 18px;
+    margin-bottom: 7px;
+    font-weight: bold;
+    color: #333333;
+}
+
+input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #b8c9e6;
+    border-radius: 7px;
+    font-size: 15px;
+    outline: none;
+}
+
+input:focus {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
+}
+
+button,
+.link-button {
+    display: block;
+    width: 100%;
+    margin-top: 22px;
+    padding: 13px;
+    background: #0d6efd;
+    color: #ffffff;
+    border: none;
+    border-radius: 7px;
+    text-align: center;
+    text-decoration: none;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background 0.3s ease;
+}
+
+button:hover,
+.link-button:hover {
+    background: #084298;
+}
+
+.message {
+    padding: 12px;
+    border-radius: 7px;
+    margin-bottom: 18px;
+    line-height: 1.5;
+}
+
+.danger {
+    background: #f8d7da;
+    color: #842029;
+}
+
+.warning {
+    background: #fff3cd;
+    color: #664d03;
+}
+
+.back-link {
+    display: block;
+    text-align: center;
+    margin-top: 20px;
+    color: #0d6efd;
+    text-decoration: none;
+}
+
+.back-link:hover {
+    color: #084298;
+    text-decoration: underline;
+}
+```
+
+    </style>
 </head>
 
-<body class="hold-transition login-page">
+<body>
 
-<div class="login-box">
+<div class="reset-container">
 
-    <div class="card card-outline card-primary">
+    <h2>Reset Your Password</h2>
 
-        <div class="card-header text-center">
+    <p>Clare Designs Management System</p>
 
-            <h3>Clare Designs</h3>
-
-            <p>Reset Administrator Password</p>
-
+    <?php if ($message !== ""): ?>
+        <div class="message <?= htmlspecialchars($messageType) ?>">
+            <?= htmlspecialchars($message) ?>
         </div>
-
-        <div class="card-body">
-
-            <?php if ($message !== ""): ?>
-
-                <div class="alert alert-<?php
-                    echo htmlspecialchars($messageType);
-                ?>">
-
-                    <?php
-                    echo htmlspecialchars($message);
-                    ?>
-
-                </div>
-
-            <?php endif; ?>
+    <?php endif; ?>
 
 
-            <?php if ($validToken): ?>
+    <?php if ($reset): ?>
 
-                <p>
-                    Enter and confirm your new password below.
-                </p>
+        <p>Enter your new password below.</p>
 
-                <form method="POST"
-                      action="reset_password.php">
+        <form method="POST" action="reset_password.php">
 
-                    <input
-                        type="hidden"
-                        name="token"
-                        value="<?php
-                            echo htmlspecialchars(
-                                $token,
-                                ENT_QUOTES,
-                                "UTF-8"
-                            );
-                        ?>"
-                    >
+            <input
+                type="hidden"
+                name="token"
+                value="<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>"
+            >
 
-                    <div class="form-group">
+            <label for="new_password">New Password</label>
 
-                        <label for="password">
-                            New Password
-                        </label>
+            <input
+                type="password"
+                id="new_password"
+                name="new_password"
+                minlength="12"
+                autocomplete="new-password"
+                required
+            >
 
-                        <input
-                            type="password"
-                            id="password"
-                            name="password"
-                            class="form-control"
-                            minlength="12"
-                            autocomplete="new-password"
-                            required
-                        >
+            <label for="confirm_password">Confirm New Password</label>
 
-                    </div>
+            <input
+                type="password"
+                id="confirm_password"
+                name="confirm_password"
+                minlength="12"
+                autocomplete="new-password"
+                required
+            >
 
-                    <div class="form-group">
+            <button type="submit">Update Password</button>
 
-                        <label for="confirm_password">
-                            Confirm New Password
-                        </label>
+        </form>
 
-                        <input
-                            type="password"
-                            id="confirm_password"
-                            name="confirm_password"
-                            class="form-control"
-                            minlength="12"
-                            autocomplete="new-password"
-                            required
-                        >
+    <?php else: ?>
 
-                    </div>
+        <a class="link-button" href="forgot_password.php">
+            Request New Reset Link
+        </a>
 
-                    <button
-                        type="submit"
-                        class="btn btn-primary btn-block">
+    <?php endif; ?>
 
-                        Reset Password
-
-                    </button>
-
-                </form>
-
-            <?php else: ?>
-
-                <p>
-                    Your reset link is invalid or has expired.
-                    Request a new link to continue.
-                </p>
-
-                <a
-                    href="forgot_password.php"
-                    class="btn btn-primary btn-block">
-
-                    Request New Reset Link
-
-                </a>
-
-            <?php endif; ?>
-
-            <div class="text-center mt-3">
-
-                <a href="login.php">
-                    Back to Login
-                </a>
-
-            </div>
-
-        </div>
-
-    </div>
+    <a class="back-link" href="login.php">Back to Login</a>
 
 </div>
 
 </body>
-
 </html>

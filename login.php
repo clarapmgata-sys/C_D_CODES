@@ -1,27 +1,41 @@
 <?php
+
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 session_start();
 require_once 'db.php';
 
-// Redirect already logged-in users to their dashboard
-if (isset($_SESSION['user_id'], $_SESSION['role'])) {
-    if ($_SESSION['role'] === 'admin') {
+$error = '';
+$selectedRole = '';
+
+// Redirect already logged-in users
+if (isset($_SESSION['role'])) {
+
+    if (
+        $_SESSION['role'] === 'admin' &&
+        isset($_SESSION['user_id'])
+    ) {
         header("Location: admin/dashboard.php");
         exit;
     }
 
-    if ($_SESSION['role'] === 'staff' && isset($_SESSION['staff_id'])) {
+    if (
+        in_array($_SESSION['role'], ['staff', 'designer'], true) &&
+        isset($_SESSION['user_id'], $_SESSION['staff_id'])
+    ) {
         header("Location: staff/dashboard.php");
         exit;
     }
 
-    if ($_SESSION['role'] === 'customer' && isset($_SESSION['customer_id'])) {
-        header("Location: customer_dashboard.php");
+    if (
+        $_SESSION['role'] === 'customer' &&
+        isset($_SESSION['customer_id'])
+    ) {
+        header("Location: customer/dashboard.php");
         exit;
     }
 }
-
-$error = '';
-$selectedRole = '';
 
 // Process login form
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -41,7 +55,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } else {
 
-        // ADMIN AND STAFF ACCOUNTS ARE STORED IN THE USERS TABLE
+        // =====================================
+        // ADMIN AND STAFF LOGIN
+        // =====================================
         if ($selectedRole === 'admin' || $selectedRole === 'staff') {
 
             $stmt = $conn->prepare("
@@ -52,80 +68,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 LIMIT 1
             ");
 
-            $stmt->bind_param("s", $email);
-            $stmt->execute();
+            if (!$stmt) {
 
-            $result = $stmt->get_result();
-            $user = $result->fetch_assoc();
-
-            $stmt->close();
-
-           if (
-    $user &&
-    password_verify($password, $user['password_hash']) &&
-    strtolower($user['role']) === $selectedRole &&
-    (
-        ($selectedRole === 'admin' &&
-         strtolower($user['account_status']) === 'approved')
-        ||
-        ($selectedRole === 'staff' &&
-         strtolower($user['account_status']) === 'active')
-    )
-) {
-
-                // Get the staff ID for staff accounts
-                $staffId = null;
-
-                if ($selectedRole === 'staff') {
-                    $staffStmt = $conn->prepare("
-                        SELECT staff_id
-                        FROM staff
-                        WHERE user_id = ?
-                        LIMIT 1
-                    ");
-
-                    $staffStmt->bind_param("i", $user['user_id']);
-                    $staffStmt->execute();
-
-                    $staffResult = $staffStmt->get_result();
-                    $staffRecord = $staffResult->fetch_assoc();
-
-                    $staffStmt->close();
-
-                    if (!$staffRecord) {
-                        $error = "Your staff profile has not been created. Contact the administrator.";
-                    } else {
-                        $staffId = (int)$staffRecord['staff_id'];
-                    }
-                }
-
-                if ($error === '') {
-                    session_regenerate_id(true);
-
-                    $_SESSION['user_id'] = (int)$user['user_id'];
-                    $_SESSION['full_name'] = $user['full_name'];
-                    $_SESSION['email'] = $user['email'];
-                    $_SESSION['role'] = strtolower($user['role']);
-
-                    if ($selectedRole === 'staff') {
-                        $_SESSION['staff_id'] = $staffId;
-
-                        header("Location: staff/staff_dashboard.php");
-                        exit;
-                    }
-
-                    header("Location: admin/dashboard.php");
-                    exit;
-                }
+                $error = "Unable to process login. Please try again.";
 
             } else {
-                $error = "Invalid email, password, account type, or inactive account.";
+
+                $stmt->bind_param("s", $email);
+                $stmt->execute();
+
+                $result = $stmt->get_result();
+                $user = $result->fetch_assoc();
+
+                $stmt->close();
+
+                if (
+                    $user &&
+                    !empty($user['password_hash']) &&
+                    password_verify($password, $user['password_hash'])
+                ) {
+
+                    $databaseRole = strtolower($user['role']);
+                    $accountStatus = strtolower($user['account_status']);
+
+                    // Check role and account status
+                    $validAdmin =
+                        $selectedRole === 'admin' &&
+                        $databaseRole === 'admin' &&
+                        $accountStatus === 'approved';
+
+                    $validStaff =
+                        $selectedRole === 'staff' &&
+                        in_array(
+                            $databaseRole,
+                            ['staff', 'designer'],
+                            true
+                        ) &&
+                        $accountStatus === 'active';
+
+                    if ($validAdmin || $validStaff) {
+
+                        $staffId = null;
+
+                        // Find staff profile for staff/designer
+                        if ($validStaff) {
+
+                            $staffStmt = $conn->prepare("
+                                SELECT staff_id
+                                FROM staff
+                                WHERE user_id = ?
+                                LIMIT 1
+                            ");
+
+                            if (!$staffStmt) {
+
+                                $error = "Unable to check your staff profile.";
+
+                            } else {
+
+                                $staffStmt->bind_param(
+                                    "i",
+                                    $user['user_id']
+                                );
+
+                                $staffStmt->execute();
+
+                                $staffResult = $staffStmt->get_result();
+                                $staffRecord = $staffResult->fetch_assoc();
+
+                                $staffStmt->close();
+
+                                if (!$staffRecord) {
+                                    $error = "Your staff profile has not been created. Contact the administrator.";
+                                } else {
+                                    $staffId = (int)$staffRecord['staff_id'];
+                                }
+                            }
+                        }
+
+                        if ($error === '') {
+
+                            session_regenerate_id(true);
+
+                            $_SESSION['user_id'] = (int)$user['user_id'];
+                            $_SESSION['full_name'] = $user['full_name'];
+                            $_SESSION['email'] = $user['email'];
+                            $_SESSION['role'] = $databaseRole;
+
+                            if ($validStaff) {
+
+                                $_SESSION['staff_id'] = $staffId;
+
+                                header("Location: staff/dashboard.php");
+                                exit;
+                            }
+
+                            header("Location: admin/dashboard.php");
+                            exit;
+                        }
+
+                    } else {
+
+                        $error = "Invalid email, password, account type, or inactive account.";
+                    }
+
+                } else {
+
+                    $error = "Invalid email, password, account type, or inactive account.";
+                }
             }
 
         } else {
 
-            // CUSTOMER ACCOUNTS ARE LOOKED UP IN THE CUSTOMERS TABLE
-            // This assumes customers have password_hash and account_status columns.
+            // =====================================
+            // CUSTOMER LOGIN
+            // =====================================
+
             $stmt = $conn->prepare("
                 SELECT customer_id, full_name, email,
                        password_hash, account_status
@@ -135,8 +193,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
 
             if (!$stmt) {
-                $error = "Customer login setup needs to be checked against your database.";
+
+                $error = "Unable to process customer login. Check your database structure.";
+
             } else {
+
                 $stmt->bind_param("s", $email);
                 $stmt->execute();
 
@@ -147,33 +208,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (
                     $customer &&
-                    isset($customer['password_hash']) &&
-                    password_verify($password, $customer['password_hash']) &&
-                    isset($customer['account_status']) &&
+                    !empty($customer['password_hash']) &&
+                    password_verify(
+                        $password,
+                        $customer['password_hash']
+                    ) &&
                     strtolower($customer['account_status']) === 'active'
                 ) {
+
                     session_regenerate_id(true);
 
-                    $_SESSION['customer_id'] = (int)$customer['customer_id'];
-                    $_SESSION['full_name'] = $customer['full_name'];
-                    $_SESSION['email'] = $customer['email'];
+                    // Store customer session
+                    $_SESSION['customer_id'] =
+                        (int)$customer['customer_id'];
+
+                    $_SESSION['full_name'] =
+                        $customer['full_name'];
+
+                    $_SESSION['email'] =
+                        $customer['email'];
+
                     $_SESSION['role'] = 'customer';
 
-                    header("Location: customer_dashboard.php");
+                    // Redirect to customer dashboard
+                    header("Location: customer/dashboard.php");
                     exit;
 
                 } else {
-                    $error = "Invalid customer email or password, or the account is inactive.";
+
+                    $error = "Invalid customer email or password, or your account is inactive. If you registered before adding a password, please register with a new email or contact the administrator.";
                 }
             }
         }
     }
 }
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <title>Login | Clare Designs</title>
@@ -267,11 +344,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: bold;
         }
 
-        .brand-text {
-            color: #0056b3;
-            font-weight: bold;
+        .forgot-password {
+            text-align: right;
+            margin-bottom: 15px;
         }
     </style>
+
 </head>
 
 <body>
@@ -279,46 +357,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="login-container">
 
     <div class="login-header">
+
         <h1>CLARE DESIGNS</h1>
+
         <p>Welcome back! Please log in to continue.</p>
+
     </div>
 
     <div class="login-body">
 
         <?php if ($error !== ''): ?>
+
             <div class="alert alert-danger" role="alert">
-                <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?>
+                <?= htmlspecialchars(
+                    $error,
+                    ENT_QUOTES,
+                    'UTF-8'
+                ) ?>
             </div>
+
         <?php endif; ?>
 
         <form method="POST" action="login.php">
 
             <div class="form-group">
+
                 <label class="role-label" for="role">
                     Login As
                 </label>
 
-                <select name="role" id="role" class="form-control" required>
-                    <option value="">Select your account type</option>
+                <select
+                    name="role"
+                    id="role"
+                    class="form-control"
+                    required>
 
-                    <option value="admin"
+                    <option value="">
+                        Select your account type
+                    </option>
+
+                    <option
+                        value="admin"
                         <?= $selectedRole === 'admin' ? 'selected' : '' ?>>
                         Administrator
                     </option>
 
-                    <option value="staff"
+                    <option
+                        value="staff"
                         <?= $selectedRole === 'staff' ? 'selected' : '' ?>>
                         Staff / Designer
                     </option>
 
-                    <option value="customer"
+                    <option
+                        value="customer"
                         <?= $selectedRole === 'customer' ? 'selected' : '' ?>>
                         Customer / Client
                     </option>
+
                 </select>
+
             </div>
 
             <div class="form-group">
+
                 <label for="email">Email Address</label>
 
                 <input
@@ -327,13 +428,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     id="email"
                     class="form-control"
                     placeholder="Enter your email address"
-                    value="<?= htmlspecialchars($_POST['email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                    value="<?= htmlspecialchars(
+                        $_POST['email'] ?? '',
+                        ENT_QUOTES,
+                        'UTF-8'
+                    ) ?>"
                     autocomplete="username"
-                    required
-                >
+                    maxlength="150"
+                    required>
+
             </div>
 
             <div class="form-group">
+
                 <label for="password">Password</label>
 
                 <input
@@ -343,12 +450,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     class="form-control"
                     placeholder="Enter your password"
                     autocomplete="current-password"
-                    required
-                >
+                    required>
+
             </div>
 
-            <div class="form-group text-right">
-                <a href="forgot_password.php">Forgot Password?</a>
+            <div class="forgot-password">
+
+                <a href="forgot_password.php">
+                    Forgot Password?
+                </a>
+
             </div>
 
             <button type="submit" class="btn btn-login">
@@ -356,14 +467,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </button>
 
         </form>
+
     </div>
 
     <div class="login-footer">
+
         New customer?
+
         <a href="register.php">Create an account</a>
+
     </div>
 
 </div>
 
 </body>
+
 </html>

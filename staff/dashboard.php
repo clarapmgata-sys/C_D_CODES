@@ -113,6 +113,27 @@ function statusClass($status) {
             flex-wrap: wrap;
             position: relative;
         }
+  
+.top-nav {
+    background: #007bff;
+    border-bottom: 3px solid #0056b3;
+    padding: 14px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+}
+
+.top-nav a {
+    color: white;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+.top-nav a:hover,
+.top-nav a.active {
+    text-decoration: underline;
+}
+
 
         .navbar-brand {
             color: #fff !important;
@@ -288,11 +309,11 @@ function statusClass($status) {
 <body class="hold-transition layout-top-nav">
 
 <nav class="main-header navbar navbar-expand navbar-primary">
-    <a href="staff_dashboard.php" class="navbar-brand">CLARE DESIGNS</a>
+    <a href="dashboard.php" class="navbar-brand">CLARE DESIGNS</a>
 
     <ul class="navbar-nav">
         <li class="nav-item">
-            <a href="staff_dashboard.php" class="nav-link active">Dashboard</a>
+            <a href="dashboard.php" class="nav-link active">Dashboard</a>
         </li>
         <li class="nav-item">
             <a href="my_orders.php" class="nav-link">My Orders</a>
